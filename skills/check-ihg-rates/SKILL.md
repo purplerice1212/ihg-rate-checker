@@ -1,6 +1,6 @@
 ---
 name: check-ihg-rates
-description: Build structured IHG reward-stay queries and validate exact-stay browser observations. Use for IHG points-rate checks, rate-monitor health checks, and diagnosing missing or inconsistent results. This initial adapter does not fetch live quotes itself.
+description: Build structured IHG reward-stay queries and validate exact-stay browser observations. Use for IHG points-rate checks, rate-monitor health checks, and diagnosing missing or inconsistent results. Includes experimental browser-backed property search and selected-room extraction.
 ---
 
 # Check IHG rates
@@ -9,7 +9,7 @@ Use a structured request and fail-closed evidence validation rather than guessed
 
 ## Current capability
 
-Run `scripts/adapter.py request INPUT.json` to prepare a structured search and verified public entry URL. Run `scripts/adapter.py validate INPUT.json` to validate caller-supplied evidence. Use scripts/browser_adapter.mjs with an authorized browser tab to collect structured page observations and candidate rates. This is a semi-API foundation, not a functioning direct IHG API client. A successful fixture test does not prove live retrieval works. Do not claim errors can be eliminated.
+Run `scripts/adapter.py request INPUT.json` to prepare a structured search and verified public entry URL. Run `scripts/adapter.py validate INPUT.json` to validate caller-supplied evidence. Use scripts/browser_adapter.mjs with an authorized browser tab to collect structured page observations and candidate rates. Use readSelectedRate for a verified exact-property results page and check_rate.mjs for experimental orchestration. One selected-room live extraction has been verified; repeated end-to-end reliability remains unproven. This is not a direct IHG API client. A successful fixture test does not prove live retrieval works. Do not claim errors can be eliminated.
 
 ## Inputs
 

@@ -11,4 +11,4 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: python3 -m unittest discover -s skills/check-ihg-rates/scripts -v
-      - run: node --test skills/check-ihg-rates/scripts/test_browser_adapter.mjs
+      - run: node --test skills/check-ihg-rates/scripts/test_*.mjs

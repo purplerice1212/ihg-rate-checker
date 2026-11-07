@@ -17,3 +17,11 @@ Fixtures use fictional hotel ABCDE, fictional brand example-brand and synthetic 
 Run `node --test scripts/test_browser_adapter.mjs` for six synthetic collection/parser tests. Those tests use an injected fake browser; they are not live hotel-rate verification.
 
 Live-test correction: generated brand room-rate deep links returned an official 404. The constructor now returns the verified public reservation entry URL, structured query_parameters for reference, and UI_FORM_REQUIRED. These parameters are not applied by navigating to the entry URL. The caller must populate and verify the live form before rate collection. No generic automatic form-filling implementation is validated yet.
+
+## Experimental form submission
+
+`submitSearchForm(tab, search, destination)` implements the observed English reservation controls: destination, calendar dates (month and year verified), room/guest inputs and Reward Nights. Input control values are checked before submission. Each control interaction was exercised in the live browser, but the assembled function has not completed an end-to-end real quote run. Browser backend timeouts prevented result extraction during that test. The returned SEARCH_SUBMITTED stage is UNKNOWN, not a hotel match or rate confirmation. Selecting and confirming the exact requested hotel, opening its selected room's details and extracting the verified total are still required.
+
+Observed warning: room-card radio accessibility labels can repeat a cheaper rate from another room. Never establish price from those labels. Use the selected room's actual detail panel and whole-stay Estimated Total Price, and retain room identity throughout.
+
+`parseRatePanel(ax, expected)` parses a selected rate-detail accessibility panel, checking its room/night count and unique explicit Estimated Total Price in PTS. Its structure was grounded in an observed official panel; published fixtures replace all prices and trip details with synthetic values. It returns only an UNKNOWN details candidate. It deliberately ignores room-card radio prices and does not reject generic explanatory Points+Cash prose. A selected cash-plus-points amount, mismatched nights or ambiguous totals is rejected. A live assembled extractor still needs separate validation.

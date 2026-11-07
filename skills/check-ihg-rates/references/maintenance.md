@@ -9,3 +9,9 @@ For a page-change repair, preserve a sanitized regression fixture, make a small 
 Notify on actionable failures, meaningful rate changes and recovery; suppress repetitive healthy reports. A scheduler may be delayed or fail, and browser availability or authentication may expire. Verify the next scheduled run and actual execution before saying daily checks work.
 
 Design sources inspected, not copied wholesale: https://github.com/openai/skills/blob/main/skills/.system/skill-creator/SKILL.md and https://github.com/openai/skills/blob/main/skills/.curated/playwright/SKILL.md . The former's Apache 2.0 license was verified. Retain license and notices if copying upstream material in future. Do not auto-install arbitrary community skills.
+
+## Provider roadmap
+
+Keep exact-stay verification separate from discovery. A future discovery provider can return candidate hotels/dates, but cannot produce an official verified quote without matching occupancy, room, full-stay pricing, fees, freshness and source evidence. The documented rooms.aero partner API is a research candidate: https://developers.seats.aero/reference/rooms-getting-started and https://developers.seats.aero/reference/rooms-search . Do not assume access, freshness, commercial reuse rights or suitable occupancy support. Do not connect accounts, generate API credentials or subscribe without required authorization.
+
+Build the reliable exact-stay backend before area/global deal exploration or a polished frontend. A later UI should make inputs explicit, retain comparable filters, show full-stay totals and source timestamps, distinguish unknown from unavailable, and make error recovery understandable. No current UI or speed improvement has been verified. Benchmark matched successful searches, accuracy and failure rates rather than timing only the happy path.

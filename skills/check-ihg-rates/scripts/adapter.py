@@ -47,11 +47,15 @@ def validate(expected, evidence, now=None, max_age_seconds=3600):
     if not isinstance(evidence, dict):
         return result('UNKNOWN', 'non-object evidence')
     status = evidence.get('status')
+    if not isinstance(status, str):
+        return result('UNKNOWN', 'invalid status type')
     if status in {'BLOCKED', 'UNKNOWN'}:
         return result(status, str(evidence.get('reason', 'No verified quote')))
     if status not in {'AVAILABLE', 'UNAVAILABLE'}:
         return result('UNKNOWN', 'invalid status')
-    if evidence.get('request') != canonical:
+    observed = evidence.get('request')
+    if (not isinstance(observed, dict) or observed != canonical
+            or any(type(observed.get(k)) is not type(v) for k, v in canonical.items())):
         return result('UNKNOWN', 'exact request mismatch')
     try:
         timestamp = datetime.fromisoformat(evidence['checked_at'].replace('Z', '+00:00'))
@@ -71,7 +75,7 @@ def validate(expected, evidence, now=None, max_age_seconds=3600):
         return result('UNKNOWN', 'missing observation reference')
     if status == 'UNAVAILABLE':
         if evidence.get('explicit_no_availability') is True:
-            return result('UNAVAILABLE', 'official exact-stay unavailability observed')
+            return result('UNAVAILABLE', 'supplied unavailability evidence passed validation; live provenance must be verified by caller')
         return result('UNKNOWN', 'no explicit availability evidence')
     quote = evidence.get('quote')
     if not isinstance(quote, dict):

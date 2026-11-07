@@ -28,3 +28,7 @@ The design draws on the publicly documented OpenAI skill-creator structure and P
 ### Live-test finding
 
 Generated room-rate deep links returned an official 404 during testing. The constructor therefore returns a working public reservation entry URL and structured parameters, not a claim that the search is already applied. The current browser collector does not automatically populate hotel/date/occupancy controls. That integration and exact room-detail extraction remain unfinished. A homepage marketing points amount must never be reported as a hotel quote.
+
+### Experimental form runner
+
+The development version adds `submitSearchForm(tab, search, destination)` using observed English-language controls, explicit calendar month/year matching, exact input-control checks, reward selection confirmation, and origin checks before entering data and after submission. It returns UNKNOWN at SEARCH_SUBMITTED. The assembled runner still needs an end-to-end live test; exact hotel selection and room-detail extraction are unfinished. The original browser interactions reached search submission, but the browser backend timed out before reading results.

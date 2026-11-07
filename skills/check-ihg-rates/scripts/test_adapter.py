@@ -45,6 +45,11 @@ class AdapterTests(unittest.TestCase):
     def test_unavailable(self):
         self.ev['status']='UNAVAILABLE'; self.check(self.ev,'UNKNOWN')
         self.ev['explicit_no_availability']=True; self.check(self.ev,'UNAVAILABLE')
+    def test_bad_status_types(self):
+        for status in ([],{},True,1,None):
+            self.ev['status']=status; self.check(self.ev,'UNKNOWN')
+    def test_bool_occupancy_evidence(self):
+        self.ev['request']['rooms']=True; self.check(self.ev,'UNKNOWN')
     def test_cash_or_nightly_rejected(self):
         self.ev['quote']['rate_type']='CASH_PLUS_POINTS'; self.check(self.ev,'UNKNOWN')
         self.ev['quote']['rate_type']='PURE_POINTS'; self.ev['quote']['total_scope']='NIGHTLY'; self.check(self.ev,'UNKNOWN')

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Check IHG rates"
+  short_description: "Build IHG queries and validate browser rate evidence"
+  default_prompt: "Use $check-ihg-rates to check an exact IHG reward stay, verify the official browser evidence, and report any blocked or unverified steps honestly."

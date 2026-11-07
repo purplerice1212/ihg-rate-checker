@@ -1,0 +1,14 @@
+name: Offline contract tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s skills/check-ihg-rates/scripts -v
+      - run: node --test skills/check-ihg-rates/scripts/test_browser_adapter.mjs

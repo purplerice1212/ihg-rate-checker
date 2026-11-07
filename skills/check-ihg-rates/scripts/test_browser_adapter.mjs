@@ -330,15 +330,18 @@ import {checkRate} from './check_rate.mjs';
 async function queryBrowser(options={}) {
   const rate=rateBrowser();const source=await rate.tab.url();
   const form=formBrowser({afterUrl:source,submittedSnapshot:options.submittedSnapshot});
-  const state={reads:0,reloads:0};
+  const state={reads:0,reloads:0,screenshots:0};
   const tab={...form.tab,
     async getAXState(args){
       const n=state.reads++;
       const error=options.readErrors?.[n];if(error)throw error;
+      if(options.persistentReadiness!==undefined)return options.persistentReadiness;
+      if(options.readinessSequence?.[n]!==undefined)return options.readinessSequence[n];
       if(options.readiness!==undefined&&n===0)return options.readiness;
       return rate.tab.getAXState(args);
     },
-    click:rate.tab.click,
+    get click(){return form.state.submitted?rate.tab.click:undefined;},
+    async getScreenshot(args){assert.deepEqual(args,{emit:false});state.screenshots++;if(options.screenshotError)throw options.screenshotError;return {privateSyntheticImage:true};},
     async reload(){state.reloads++;if(options.reloadError)throw options.reloadError;},
     playwright:{...form.tab.playwright,getByRole(role,opts){
       if(opts?.name==='Close rate details information')return rate.tab.playwright.getByRole(role,opts);
@@ -385,7 +388,7 @@ test('checkRate preserves BLOCKED from submitted snapshot and readiness',async()
   assert.equal((await runPropertyQuery(readiness.tab)).status,'BLOCKED');assert.equal(readiness.state.reloads,0);
 });
 test('checkRate keeps missing results UNKNOWN and hides private exception messages',async()=>{
-  const missing=await propertyQueryBrowser({readiness:'No supported room cards in this fixture'});
+  const missing=await propertyQueryBrowser({persistentReadiness:'No supported room cards in this fixture'});
   assert.equal((await runPropertyQuery(missing.tab)).status,'UNKNOWN');assert.equal(missing.state.reloads,0);
   const privateError=await propertyQueryBrowser({readErrors:[new TypeError('private-trip-and-secret-query')]});
   const r=await runPropertyQuery(privateError.tab);assert.equal(r.error_type,'TYPE_ERROR');assert.ok(!JSON.stringify(r).includes('private-trip'));
@@ -471,4 +474,167 @@ test('calendar navigation supports both observed month button capitalizations',a
     await assert.rejects(()=>submitSearchForm(tab,validSearch(),'Example destination'),/bound/i);
     assert.equal(state.monthMoves,24);
   }
+});
+test('checkRate observes loading shell then reads results once without reloading',async()=>{
+  const q=await propertyQueryBrowser({readiness:'1 container Loading room results'});
+  const r=await runPropertyQuery(q.tab);assert.equal(r.status,'AVAILABLE');assert.equal(q.state.screenshots,1);assert.equal(q.state.reloads,0);
+  assert.ok(r.timing.stages.some(s=>s.name==='results_loading_screenshot'));
+  assert.ok(r.timing.stages.some(s=>s.name==='results_readiness_followup'));assert.ok(!JSON.stringify(r).includes('privateSyntheticImage'));
+});
+test('checkRate performs at most one loading follow-up when results stay absent',async()=>{
+  const q=await propertyQueryBrowser({persistentReadiness:'1 container Loading'});
+  const r=await runPropertyQuery(q.tab);assert.equal(r.status,'UNKNOWN');assert.equal(q.state.reads,2);assert.equal(q.state.screenshots,1);assert.equal(q.state.reloads,0);
+});
+test('checkRate never follows up blocked or error pages, even when room-like nodes exist',async()=>{
+  for(const readiness of ['Access denied','CAPTCHA verify you are human','404 Page not found','Something went wrong\n100 container ROOM_CODEABC']){
+    const q=await propertyQueryBrowser({readiness});const r=await runPropertyQuery(q.tab);
+    assert.ok(['UNKNOWN','BLOCKED'].includes(r.status));assert.equal(q.state.reads,1);assert.equal(q.state.screenshots,0);assert.equal(q.state.reloads,0);
+  }
+});
+test('checkRate stops on challenge, error or timeout during the single loading follow-up',async()=>{
+  for(const followup of ['CAPTCHA verify you are human','Technical difficulties','1 container Still loading']){
+    const q=await propertyQueryBrowser({readinessSequence:['1 container Loading',followup]});
+    const r=await runPropertyQuery(q.tab);assert.equal(r.status,followup.includes('CAPTCHA')?'BLOCKED':'UNKNOWN');assert.equal(q.state.reads,2);assert.equal(q.state.screenshots,1);assert.equal(q.state.reloads,0);
+  }
+  const q=await propertyQueryBrowser({readiness:'1 container Loading',readErrors:[undefined,new Error('Runtime.evaluate timed out.')]});
+  assert.equal((await runPropertyQuery(q.tab)).status,'UNKNOWN');assert.equal(q.state.reloads,0);assert.equal(q.state.reads,2);
+});
+test('checkRate loading follow-up works once after allowed protocol reload',async()=>{
+  const q=await propertyQueryBrowser({readErrors:[new Error('Runtime.evaluate timed out.')],readinessSequence:[undefined,'1 container Loading']});
+  const r=await runPropertyQuery(q.tab);assert.equal(r.status,'AVAILABLE');assert.equal(q.state.reloads,1);assert.equal(q.state.screenshots,1);
+});
+import {FORM_STAGES} from './browser_adapter.mjs';
+test('form diagnostics emit one fixed stage string without request data',async()=>{
+  const calls=[];const {tab}=formBrowser({propertyName:syntheticProperty,startDecember:true});
+  const search=querySearch();
+  await submitSearchForm(tab,search,null,{propertyName:syntheticProperty,onStage:(...args)=>calls.push(args)});
+  assert.ok(calls.length>0);assert.ok(calls.every(args=>args.length===1&&FORM_STAGES.includes(args[0])));
+  const names=calls.map(args=>args[0]);
+  for(const stage of FORM_STAGES)assert.ok(names.includes(stage),`missing ${stage}`);
+  assert.equal(names[0],'entry_navigation');assert.equal(names.at(-1),'submitted_snapshot');
+  assert.ok(!JSON.stringify(calls).includes(syntheticProperty));assert.ok(!JSON.stringify(calls).includes(search.request.hotel));
+});
+test('form diagnostics callback errors cannot cause transport recovery or duplicate submission',async()=>{
+  for(const onStage of [()=>{throw new Error('Runtime.evaluate timed out.');},async()=>{throw new Error('DOMSnapshot.captureSnapshot timed out.');}]){
+    const q=await propertyQueryBrowser();
+    const r=await checkRate(q.tab,querySearch(),{propertyName:syntheticProperty,roomName:syntheticRoom,onStage});
+    assert.equal(r.status,'AVAILABLE');assert.equal(r.last_form_stage,'submitted_snapshot');assert.equal(q.state.reloads,0);
+    assert.equal(q.formState.clicks.filter(x=>x==='View Prices').length,1);
+  }
+});
+test('checkRate records fixed last form stage after failure without exposing exception values',async()=>{
+  const q=await propertyQueryBrowser();const get=q.tab.playwright.getByRole;
+  q.tab.playwright.getByRole=(role,opts)=>role==='textbox'&&opts.name==='rooms'?{async fill(){throw new Error('private-request-values');}}:get(role,opts);
+  const r=await runPropertyQuery(q.tab);assert.equal(r.status,'UNKNOWN');assert.equal(r.last_form_stage,'occupancy_fill');assert.equal(q.state.reloads,0);
+  assert.ok(!JSON.stringify(r).includes('private-request-values'));
+  const initial=await propertyQueryBrowser();failFormSnapshot(initial,{error:new Error('Access denied')});
+  assert.equal((await runPropertyQuery(initial.tab)).last_form_stage,'entry_snapshot');
+});
+import {calendarButtonID} from './browser_adapter.mjs';
+test('native calendar parser accepts observed exact button and pop up button shapes',()=>{
+  assert.equal(calendarButtonID('\t45 button Stay: Check-In — Check-out',/^Stay: Check-In — Check-out$/),45);
+  assert.equal(calendarButtonID('  52 button Next month, Description: Navigate to the next month',/^Next month$/i),52);
+  assert.equal(calendarButtonID('  53 pop up button Previous Month',/^Previous month$/i),53);
+  assert.equal(calendarButtonID('  54 pop up button (collapsed) Next Month, Description: Calendar control',/^Next month$/i),54);
+});
+test('native calendar parser rejects ambiguity, disabled nodes, challenges and extra text',()=>{
+  for(const ax of ['1 button Next month\n2 button Next Month','1 button (disabled) Next month',
+    '1 button (unavailable) Next month','1 button Next month, Description: Calendar, Enabled: false',
+    '1 button Next month extra','1 button Other Next month','1 text button Next month',
+    'CAPTCHA verify you are human\n1 button Next month']) {
+    assert.throws(()=>calendarButtonID(ax,/^Next month$/i),/calendar|verification/i);
+  }
+  assert.throws(()=>calendarButtonID('1 button Next month',/Next month/),/Exact/);
+});
+test('native calendar clicks use fresh AX IDs for open and advance without Playwright fallback',async()=>{
+  const q=formBrowser({startDecember:true});const ids=[];let reads=0;
+  q.tab.getAXState=async args=>{assert.deepEqual(args,{disableDiffing:true,emit:false});reads++;return reads===1?'45 button Stay: Check-In — Check-out':'88 button Next month, Description: Next calendar page';};
+  q.tab.click=async id=>{ids.push(id);if(id===88)q.state.monthMoves++;};
+  const get=q.tab.playwright.getByRole;
+  q.tab.playwright.getByRole=(role,opts={})=>{
+    if(role==='button'&&opts.name instanceof RegExp&&(/^Stay:/.test(opts.name.source.replace('^',''))||opts.name.test('Next month'))){
+      const locator=get(role,opts);return {...locator,async click(){throw new Error('Unexpected Playwright calendar click');}};
+    }
+    return get(role,opts);
+  };
+  const r=await submitSearchForm(q.tab,validSearch(),'Example destination');
+  assert.equal(r.stage,'SEARCH_SUBMITTED');assert.deepEqual(ids,[45,88]);assert.equal(reads,2);
+});
+test('native calendar denial or click failure never triggers a Playwright fallback',async()=>{
+  for(const ax of ['Access denied','45 button Stay: Check-In — Check-out']){
+    const q=formBrowser();let fallback=0,native=0;
+    q.tab.getAXState=async()=>ax;q.tab.click=async()=>{native++;throw new Error('Access denied');};
+    const get=q.tab.playwright.getByRole;q.tab.playwright.getByRole=(role,opts)=>{
+      const locator=get(role,opts);return {...locator,async click(){fallback++;return locator.click();}};
+    };
+    await assert.rejects(()=>submitSearchForm(q.tab,validSearch(),'Example destination'),/denied|verification/i);
+    assert.equal(fallback,0);assert.equal(native,ax==='Access denied'?0:1);
+  }
+});
+test('native calendar opens full English date-range Description pop-up only',async()=>{
+  for(const valid of [true,false]){
+    const q=formBrowser();let clicked=0;
+    q.tab.getAXState=async()=>`26 pop up button (collapsed) Description: Stay: Saturday, 07 November 2026 — Sunday, 08 November 2026${valid?'':' extra'}, Secondary Actions: Expand`;
+    q.tab.click=async id=>{assert.equal(id,26);clicked++;};
+    if(valid){assert.equal((await submitSearchForm(q.tab,validSearch(),'Example destination')).stage,'SEARCH_SUBMITTED');assert.equal(clicked,1);}
+    else{await assert.rejects(()=>submitSearchForm(q.tab,validSearch(),'Example destination'),/missing|ambiguous/);assert.equal(clicked,0);}
+  }
+});
+import {classifyQueryError} from './check_rate.mjs';
+test('query diagnostics classify exceptions into fixed enums without returning private text',()=>{
+  const cases=[
+    ['Runtime.evaluate timed out. private-url','PROTOCOL_TIMEOUT'],
+    ['DOMSnapshot.captureSnapshot timed out. private-url','PROTOCOL_TIMEOUT'],
+    ['Target closed: private-url','TARGET_CLOSED'],
+    ['Target page, context or browser has been closed private-url','TARGET_CLOSED'],
+    ['locator.click: Timeout 10000ms exceeded private-selector','SELECTOR_DEADLINE'],
+    ['Waiting for selector private-selector: deadline exceeded','SELECTOR_DEADLINE'],
+    ['Runtime.evaluate timed out. Access denied private-url','GENERIC'],
+    ['Unexpected private-url','GENERIC']
+  ];
+  for(const [message,expected] of cases)assert.equal(classifyQueryError(new Error(message)),expected);
+  assert.equal(classifyQueryError(null),'GENERIC');
+});
+test('diagnostic error codes do not expand retries and annotate the failing stage',async()=>{
+  for(const [message,code] of [['Target closed private-url','TARGET_CLOSED'],['locator.click: Timeout exceeded private-selector','SELECTOR_DEADLINE'],['Other private-error','GENERIC']]){
+    const q=await propertyQueryBrowser({readErrors:[new Error(message)]});const r=await runPropertyQuery(q.tab);
+    assert.equal(r.status,'UNKNOWN');assert.equal(r.error_code,code);assert.equal(q.state.reloads,0);
+    assert.equal(r.timing.stages.at(-1).error_code,code);assert.equal(r.timing.stages.at(-1).name,'results_readiness');
+    assert.ok(!JSON.stringify(r).includes('private-'));
+  }
+  const q=await propertyQueryBrowser({readErrors:[new Error('Runtime.evaluate timed out.'),new Error('Target closed private-url')]});
+  const r=await runPropertyQuery(q.tab);assert.equal(r.error_code,'TARGET_CLOSED');assert.equal(q.state.reloads,1);
+  assert.equal(r.timing.stages.find(s=>s.name==='results_readiness').error_code,'PROTOCOL_TIMEOUT');
+});
+test('bounded readiness stops if screenshot is unavailable or throws, with no reload',async()=>{
+  const absent=await propertyQueryBrowser({readiness:'1 container Loading'});delete absent.tab.getScreenshot;
+  const missing=await runPropertyQuery(absent.tab);assert.equal(missing.status,'UNKNOWN');assert.equal(absent.state.reads,1);assert.equal(absent.state.reloads,0);
+  const failed=await propertyQueryBrowser({readiness:'1 container Loading',screenshotError:new Error('DOMSnapshot.captureSnapshot timed out.')});
+  const r=await runPropertyQuery(failed.tab);assert.equal(r.error_code,'PROTOCOL_TIMEOUT');assert.equal(failed.state.reads,1);assert.equal(failed.state.screenshots,1);assert.equal(failed.state.reloads,0);
+});
+const snapshotChanged=()=>new Error('Accessibility capture changed before it was committed');
+test('SNAPSHOT_CHANGED gets exactly one observation-only readiness refresh',async()=>{
+  assert.equal(classifyQueryError(snapshotChanged()),'SNAPSHOT_CHANGED');
+  const q=await propertyQueryBrowser({readErrors:[snapshotChanged()]});const r=await runPropertyQuery(q.tab);
+  assert.equal(r.status,'AVAILABLE');assert.equal(r.snapshot_refreshed,true);assert.equal(q.state.reloads,0);
+  assert.equal(q.formState.clicks.filter(x=>x==='View Prices').length,1);
+  assert.equal(r.timing.stages.filter(s=>s.name==='snapshot_changed_refresh').length,1);
+});
+test('SNAPSHOT_CHANGED readiness refresh has a global one-read budget',async()=>{
+  const q=await propertyQueryBrowser({readErrors:[snapshotChanged(),snapshotChanged()]});const r=await runPropertyQuery(q.tab);
+  assert.equal(r.status,'UNKNOWN');assert.equal(r.error_code,'SNAPSHOT_CHANGED');assert.equal(q.state.reads,2);assert.equal(q.state.reloads,0);
+  const later=await propertyQueryBrowser({readErrors:[snapshotChanged(),undefined,snapshotChanged()],readinessSequence:[undefined,'1 container Loading']});
+  const late=await runPropertyQuery(later.tab);assert.equal(late.error_code,'SNAPSHOT_CHANGED');assert.equal(later.state.reads,3);assert.equal(later.state.reloads,0);
+});
+test('SNAPSHOT_CHANGED refresh never retries denials, lookalikes, or form failures',async()=>{
+  for(const error of [new Error('Accessibility capture changed before it was committed Access denied'),new Error('Other snapshot changed')]){
+    const q=await propertyQueryBrowser({readErrors:[error]});const r=await runPropertyQuery(q.tab);
+    assert.equal(r.status,'UNKNOWN');assert.equal(r.snapshot_refreshed,false);assert.equal(q.state.reads,1);assert.equal(q.state.reloads,0);
+  }
+  const form=await propertyQueryBrowser();failFormSnapshot(form,{error:snapshotChanged()});const r=await runPropertyQuery(form.tab);
+  assert.equal(r.error_code,'SNAPSHOT_CHANGED');assert.equal(r.snapshot_refreshed,false);assert.equal(form.state.reads,0);assert.equal(form.state.reloads,0);
+});
+test('SNAPSHOT_CHANGED can refresh readiness after a permitted ordinary reload',async()=>{
+  const q=await propertyQueryBrowser({readErrors:[new Error('Runtime.evaluate timed out.'),snapshotChanged()]});const r=await runPropertyQuery(q.tab);
+  assert.equal(r.status,'AVAILABLE');assert.equal(q.state.reloads,1);assert.equal(r.snapshot_refreshed,true);
 });

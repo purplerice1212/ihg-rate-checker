@@ -43,10 +43,41 @@ export function calendarIndex(months,years,iso) {
   return months.findIndex((name,i)=>name.trim()===MONTHS[month-1] && Number(years[i]?.trim())===year);
 }
 
+/** Native calendar controls use fresh AX IDs only; never fall back after failure. */
+export function calendarButtonID(ax,name) {
+  if(typeof ax!=='string'||!(name instanceof RegExp)||!name.source.startsWith('^')||!name.source.endsWith('$')) throw new Error('Exact calendar button matcher required');
+  if(parseSnapshot(ax).status==='BLOCKED') throw new Error('Access verification prevents calendar interaction');
+  const matches=[];
+  for(const line of ax.split('\n')) {
+    const node=/^[ \t]*(\d+) (?:button|pop up button)(?: \(([^)]*)\))? (.*)$/.exec(line);
+    if(!node) continue;
+    const label=node[3].replace(/^Description: /,'').replace(/, Secondary Actions: (?:Expand|Collapse)$/,'').split(', Description:')[0];
+    name.lastIndex=0;
+    if(name.test(label)&&!/(?:disabled|unavailable)/i.test(node[2]??'')&&!/Disabled: true|Enabled: false/i.test(node[3])) matches.push(Number(node[1]));
+  }
+  if(matches.length!==1) throw new Error('Calendar button missing, disabled or ambiguous');
+  return matches[0];
+}
+
+const AX_ENGLISH_DATE='(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), (?:0[1-9]|[12][0-9]|3[01]) (?:January|February|March|April|May|June|July|August|September|October|November|December) [0-9]{4}';
+const STAY_CALENDAR_NAME=new RegExp('^Stay: (?:Check-In — Check-out|'+AX_ENGLISH_DATE+' — '+AX_ENGLISH_DATE+')$');
+
+async function clickCalendarButton(tab,name,legacyName=name) {
+  if(typeof tab.click==='function'&&typeof tab.getAXState==='function') {
+    const ax=await tab.getAXState({disableDiffing:true,emit:false});
+    await tab.click(calendarButtonID(ax,name));
+  } else await tab.playwright.getByRole('button',{name:legacyName}).click();
+}
+
+export const FORM_STAGES=Object.freeze(['entry_navigation','entry_snapshot','property_heading','calendar_open','calendar_headers','calendar_day','calendar_advance','occupancy_open','occupancy_fill','rate_menu','rate_select','controls_verify','search_submit','submitted_snapshot']);
+
 /** Apply the observed English reservation-page controls, then submit a read-only search.
  * Exact hotel selection and rate-detail extraction still require subsequent work.
  */
-export async function submitSearchForm(tab,search,destination,{propertyName=null,entryMode=null}={}) {
+export async function submitSearchForm(tab,search,destination,{propertyName=null,entryMode=null,onStage=null}={}) {
+  // Diagnostics are best-effort. Callback failures must never masquerade as
+  // browser transport errors or cause a retry of an otherwise successful action.
+  const stage=async name=>{if(typeof onStage==='function'){try{await onStage(name);}catch{}}};
   if(entryMode!==null&&entryMode!=='RESULTS_FORM') throw new Error('Unsupported entry mode');
   const resultsForm=entryMode==='RESULTS_FORM';
   if(resultsForm&&(typeof propertyName!=='string'||!propertyName.trim())) throw new Error('Exact property name required for results form');
@@ -65,24 +96,30 @@ export async function submitSearchForm(tab,search,destination,{propertyName=null
   const validResultsEntry=value=>resultsPath.test(value.pathname)&&value.searchParams.getAll('qSlH').length===1&&value.searchParams.get('qSlH')===req.hotel;
   if(url.username||url.password||url.origin!=='https://www.ihg.com' || (resultsForm?!validResultsEntry(url):propertyName?!propertyPath.test(url.pathname):url.pathname!=='/hotels/us/en/reservation')) throw new Error('Expected supported reservation entry');
   if(propertyName && (typeof propertyName!=='string'||!propertyName.trim())) throw new Error('Exact property name required');
+  await stage('entry_navigation');
   if(await tab.url()!==url.href) await tab.goto(url.href);
   const entered=new URL(await tab.url());
   if(entered.username||entered.password||entered.origin!=='https://www.ihg.com') throw new Error('Unexpected redirect before input');
   if(resultsForm&&!validResultsEntry(entered)) throw new Error('Unexpected results form context after redirect');
+  await stage('entry_snapshot');
   await tab.playwright.domSnapshot();
   if(propertyName) {
+    await stage('property_heading');
     if(!await tab.playwright.getByRole('heading',{name:propertyName,exact:true}).isVisible()) throw new Error('Property heading mismatch');
   } else await tab.playwright.getByRole('combobox',{name:'Destination',exact:true}).fill(destination);
   await tab.playwright.domSnapshot();
-  await tab.playwright.getByRole('button',{name:/^Stay:/}).click();
+  await stage('calendar_open');
+  await clickCalendarButton(tab,STAY_CALENDAR_NAME,/^Stay:/);
   await tab.playwright.domSnapshot();
   for(const iso of [req.checkin,req.checkout]) {
     let selected=false;
     for(let attempt=0;attempt<24;attempt++) {
+      await stage('calendar_headers');
       const months=await tab.playwright.getByRole('button',{name:'Choose Month',exact:true}).allTextContents({});
       const years=await tab.playwright.getByRole('button',{name:'Choose Year',exact:true}).allTextContents({});
       const idx=calendarIndex(months,years,iso);
       if(idx>=0) {
+        await stage('calendar_day');
         const day=String(Number(iso.slice(8,10)));
         const cell=tab.playwright.getByRole('grid').nth(idx).getByRole('gridcell',{name:day,exact:true}).filter({hasText:new RegExp('^\\s*'+day+'\\s*$')});
         if(await cell.count()!==1) throw new Error('Ambiguous visible calendar day');
@@ -91,13 +128,16 @@ export async function submitSearchForm(tab,search,destination,{propertyName=null
       const first=(Number(years[0]?.trim())*12)+MONTHS.indexOf(months[0]?.trim());
       const wanted=Number(iso.slice(0,4))*12+Number(iso.slice(5,7))-1;
       if(!Number.isFinite(first)||MONTHS.indexOf(months[0]?.trim())<0) throw new Error('Unrecognized calendar header');
-      await tab.playwright.getByRole('button',{name:wanted<first?/^Previous month$/i:/^Next month$/i}).click();
+      await stage('calendar_advance');
+      await clickCalendarButton(tab,wanted<first?/^Previous month$/i:/^Next month$/i);
       await tab.playwright.domSnapshot();
     }
     if(!selected) throw new Error('Calendar navigation bound reached');
   }
+  await stage('occupancy_open');
   await tab.playwright.getByRole('combobox',{name:'Rooms & Guests',exact:true}).click();
   await tab.playwright.domSnapshot();
+  await stage('occupancy_fill');
   await tab.playwright.getByRole('textbox',{name:'rooms',exact:true}).fill(String(req.rooms));
   await tab.playwright.getByRole('textbox',{name:'adults',exact:true}).fill(String(req.adults));
   await tab.playwright.getByRole('textbox',{name:'children',exact:true}).fill('0');
@@ -105,9 +145,12 @@ export async function submitSearchForm(tab,search,destination,{propertyName=null
     const actual=await tab.playwright.getByRole('textbox',{name:field,exact:true}).evaluate(el=>el.value);
     if(String(actual)!==String(value)) throw new Error('Occupancy control mismatch');
   }
+  await stage('rate_menu');
   await tab.playwright.getByRole('button',{name:'Best Available',exact:true}).click();
   await tab.playwright.domSnapshot();
+  await stage('rate_select');
   await tab.playwright.getByRole('menuitemradio',{name:'Reward Nights',exact:true}).click();
+  await stage('controls_verify');
   const applied=await tab.playwright.domSnapshot();
   if(!await tab.playwright.getByRole('button',{name:'Reward Nights',exact:true}).isVisible()) throw new Error('Reward option not selected in control');
   const format=iso=>(resultsForm?entered:url).pathname.includes('/gb/en/')?`${iso.slice(8,10)}/${iso.slice(5,7)}/${iso.slice(0,4)}`:`${iso.slice(5,7)}/${iso.slice(8,10)}/${iso.slice(0,4)}`;
@@ -116,10 +159,12 @@ export async function submitSearchForm(tab,search,destination,{propertyName=null
   if((!propertyName && visibleDestination!==destination) || visibleDates.length!==2 || visibleDates[0]!==format(req.checkin) || visibleDates[1]!==format(req.checkout)) throw new Error('Search input control mismatch');
   const occupancy=`${req.rooms} Room${req.rooms===1?'':'s'}, ${req.adults} Guest${req.adults===1?'':'s'}`;
   if(!applied.includes(propertyName||destination) || !applied.includes(occupancy) || !applied.includes(format(req.checkin)) || !applied.includes(format(req.checkout)) || !applied.includes('Reward Nights')) throw new Error('Applied search context not confirmed');
+  await stage('search_submit');
   await tab.playwright.getByRole('button',{name:propertyName&&!resultsForm?'View Prices':'Search',exact:true}).click();
   const destinationUrl=await tab.url();
   const finalUrl=new URL(destinationUrl);
   if(finalUrl.username||finalUrl.password||finalUrl.origin!=='https://www.ihg.com') throw new Error('Unexpected destination after submission');
+  await stage('submitted_snapshot');
   const snapshot=await tab.playwright.domSnapshot();
   return {schema_version:1,...parseSnapshot(snapshot),request:req,checked_at:new Date().toISOString(),source_url:await tab.url(),observation:snapshot,requires_verification:true,stage:'SEARCH_SUBMITTED'};
 }
